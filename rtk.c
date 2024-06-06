@@ -14,7 +14,7 @@
 #define RTP 0
 #define TSP 1
 
-typedef struct
+typedef struct PCB
 {
     int id;
     char name[20];
@@ -40,35 +40,44 @@ typedef struct pcbq
     PCBNode *rear;
 } PCBQ;
 
-typedef struct
+typedef struct Scheduler
 {
     PCBQ RTQ;
     PCBQ TSQ;
 } Scheduler;
 
-typedef struct
+typedef struct Semaphore
 {
     int state;
     int value;
     PCBQ queue;
 } Semaphore;
 
+// Golabal variables
 void schedule (Scheduler *sch);
-// initialize queues
 Semaphore s1, s2;
 char shared;
 Scheduler scheduler;
 
-PCBQ ready_queue_rt;
-PCBQ running_queue_rt;
-PCBQ blocked_queue_rt;
-PCBQ delayed_queue_rt;
+PCBQ system_queue;
+PCBQ realtime_queue;
+PCBQ user_queue;
+PCBQ delayed_queue;
 
-PCBQ ready_queue_tc;
-PCBQ running_queue_tc;
-PCBQ blocked_queue_tc;
-PCBQ delayed_queue_tc;
+// PCBQ ready_queue;
+// PCBQ running_queue;
+// PCBQ blocked_queue;
+// PCBQ delayed_queue;
 
+// PCBQ running_queue_rt;
+// PCBQ blocked_queue_rt;
+// PCBQ delayed_queue_rt;
+
+// PCBQ ready_queue_tc;
+// PCBQ running_queue_tc;
+// PCBQ blocked_queue_tc;
+// PCBQ delayed_queue_tc;
+//
 PCB *
 findPCBByID (PCBQ *queue, int id)
 {
@@ -226,6 +235,25 @@ make_ready (Scheduler *sch, int id, PCBQ *queue)
 }
 
 void
+delete_proc (Scheduler *sch, int id, int type)
+{
+    PCBQ *queue;
+    type == RTP ? queue = &sch->RTQ : &sch->TSQ;
+
+    PCB *pcb = take (queue, id);
+
+    // TODO: remove this part
+    if (pcb)
+        {
+            printf ("Process with ID %d deleted successfully.\n", id);
+        }
+    else
+        {
+            printf ("Process with ID %d not found.\n", id);
+        }
+}
+
+void
 block (Scheduler *sch, int id, PCBQ *queue)
 {
     PCB *pcb = take (queue, id);
@@ -239,6 +267,17 @@ block (Scheduler *sch, int id, PCBQ *queue)
         {
             enqueue (&scheduler.TSQ, *pcb);
         }
+}
+void
+unblock (Scheduler *sch, int id, PCBQ *queue)
+{
+    PCB *pcb = take (queue, id); // find process with given pid
+    if (!pcb)
+        return; // no such pid found in the queue
+
+    pcb->state = READY; // set state to READY
+
+    enqueue (&sch->RTQ, *pcb); // enqueue back into ready queue
 }
 
 void
@@ -255,9 +294,9 @@ wait_sem (Semaphore *sem)
     sem->value--;
     if (sem->value < 0)
         {
-            PCB current_pcb = dequeue (&ready_queue_rt);
+            PCB current_pcb = dequeue (&ready_queue);
             enqueue (&sem->queue, current_pcb);
-            block (&scheduler, current_pcb.id, &ready_queue_rt);
+            block (&scheduler, current_pcb.id, &ready_queue);
         }
 }
 
@@ -269,7 +308,7 @@ signal_sem (Semaphore *sem)
         {
             PCBQ *queue;
             PCB pcb = dequeue (&sem->queue);
-            pcb.type == RTP ? queue = &ready_queue_rt : &ready_queue_tc;
+            pcb.type == RTP ? queue = &ready_queue : &ready_queue_tc;
             enqueue (&sem->queue, pcb);
             make_ready (&scheduler, pcb.id, queue);
         }
@@ -331,20 +370,28 @@ init_scheduler (Scheduler *sch)
 void
 schedule (Scheduler *sch)
 {
+    PCB pcb;
     while (1)
         {
-            if (sch->RTQ.front != NULL)
+            switch (ready_queue.front->pcb.state)
                 {
-                    PCB pcb = dequeue (&sch->RTQ);
-                    pthread_create (&pcb.thread, NULL, pcb.function,
-                                    NULL); // Use function pointer
+                case BLOCKED:
+                case DELAYED:
+
+                case READY:
                 }
-            else if (sch->TSQ.front != NULL)
-                {
-                    PCB pcb = dequeue (&sch->TSQ);
-                    pthread_create (&pcb.thread, NULL, pcb.function,
-                                    NULL); // Use function pointer
-                }
+            // if (sch->RTQ.front != NULL)
+            //     {
+            //         pcb = dequeue (&sch->RTQ);
+            //         pthread_create (&pcb.thread, NULL, pcb.function,
+            //                         NULL); // Use function pointer
+            //         pcb = dequeue (&sch->TSQ);
+            //         pthread_create (&pcb.thread, NULL, pcb.function,
+            //                         NULL); // Use function pointer
+            //     }
+            // else if (sch->TSQ.front != NULL)
+            //     {
+            //     }
         }
 }
 
