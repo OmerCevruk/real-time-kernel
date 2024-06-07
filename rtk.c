@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <time.h>
 // process states
 #define READY 0
 #define RUNNING 1
@@ -54,10 +54,14 @@ typedef struct Semaphore
 } Semaphore;
 
 // Golabal variables
+int current_id = 0;
+int next_id = 1;
+
 void schedule (Scheduler *sch);
 Semaphore s1, s2;
 char shared;
 Scheduler scheduler;
+PCBQ task_queue;
 
 PCBQ system_queue;
 PCBQ realtime_queue;
@@ -294,9 +298,14 @@ wait_sem (Semaphore *sem)
     sem->value--;
     if (sem->value < 0)
         {
-            PCB current_pcb = dequeue (&ready_queue);
+            PCB current_pcb
+                = dequeue (sem->queue.front->pcb.type == RTP ? &scheduler.RTQ
+                                                             : &scheduler.TSQ);
             enqueue (&sem->queue, current_pcb);
-            block (&scheduler, current_pcb.id, &ready_queue);
+
+            block (&scheduler, current_pcb.id,
+                   sem->queue.front->pcb.type == RTP ? &scheduler.RTQ
+                                                     : &scheduler.TSQ);
         }
 }
 
@@ -306,11 +315,10 @@ signal_sem (Semaphore *sem)
     sem->value++;
     if (sem->value <= 0)
         {
-            PCBQ *queue;
             PCB pcb = dequeue (&sem->queue);
-            pcb.type == RTP ? queue = &ready_queue : &ready_queue_tc;
-            enqueue (&sem->queue, pcb);
-            make_ready (&scheduler, pcb.id, queue);
+            enqueue (pcb.type == RTP ? &scheduler.RTQ : &scheduler.TSQ, pcb);
+            make_ready (&scheduler, pcb.id,
+                        pcb.type == RTP ? &scheduler.RTQ : &scheduler.TSQ);
         }
 }
 
@@ -356,6 +364,7 @@ consumer (void *arg)
             fputc (shared, dst);
             signal_sem (&s1);
         }
+
     fclose (dst);
     pthread_exit (NULL);
 }
@@ -373,25 +382,25 @@ schedule (Scheduler *sch)
     PCB pcb;
     while (1)
         {
-            switch (ready_queue.front->pcb.state)
+            // switch (ready_queue.front->pcb.state)
+            //     {
+            //     case BLOCKED:
+            //     case DELAYED:
+            //
+            //     case READY:
+            //     }
+            if (sch->RTQ.front != NULL)
                 {
-                case BLOCKED:
-                case DELAYED:
-
-                case READY:
+                    pcb = dequeue (&sch->RTQ);
+                    pthread_create (&pcb.thread, NULL, pcb.function,
+                                    NULL); // Use function pointer
+                    pcb = dequeue (&sch->TSQ);
+                    pthread_create (&pcb.thread, NULL, pcb.function,
+                                    NULL); // Use function pointer
                 }
-            // if (sch->RTQ.front != NULL)
-            //     {
-            //         pcb = dequeue (&sch->RTQ);
-            //         pthread_create (&pcb.thread, NULL, pcb.function,
-            //                         NULL); // Use function pointer
-            //         pcb = dequeue (&sch->TSQ);
-            //         pthread_create (&pcb.thread, NULL, pcb.function,
-            //                         NULL); // Use function pointer
-            //     }
-            // else if (sch->TSQ.front != NULL)
-            //     {
-            //     }
+            else if (sch->TSQ.front != NULL)
+                {
+                }
         }
 }
 
