@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
+
 // process states
 #define READY 0
 #define RUNNING 1
@@ -48,6 +48,7 @@ typedef struct Scheduler
 
 typedef struct Semaphore
 {
+    int id;
     int state;
     int value;
     PCBQ queue;
@@ -61,10 +62,11 @@ void schedule (Scheduler *sch);
 Semaphore s1, s2;
 char shared;
 Scheduler scheduler;
+
 PCBQ task_queue;
 
 PCBQ system_queue;
-PCBQ realtime_queue;
+PCBQ running_queue;
 PCBQ user_queue;
 PCBQ delayed_queue;
 
@@ -209,7 +211,7 @@ take (PCBQ *queue, int id)
 }
 
 void
-make_proc (Scheduler *sch, char *name, int type, int state,
+make_proc (char *name, int type, int state,
            void *(*function) (void *))
 {
     static int id = 0;
@@ -220,14 +222,17 @@ make_proc (Scheduler *sch, char *name, int type, int state,
     pcb.state = state;
     pcb.semaphore_id = (type == 0) ? s1.value : s2.value;
     pcb.function = function; // Assign function pointer
-    enqueue (type == 0 ? &sch->RTQ : &sch->TSQ, pcb);
+    enqueue (&task_queue, pcb);
 }
 
 void
 make_ready (Scheduler *sch, int id, PCBQ *queue)
 {
     PCB *pcb = take (queue, id);
-    pcb->state = READY;
+    if (pcb) {
+        pcb->state = READY;
+    }
+    
     if (pcb->type == RTP)
         {
             enqueue (&sch->RTQ, *pcb);
@@ -258,7 +263,7 @@ delete_proc (Scheduler *sch, int id, int type)
 }
 
 void
-block (Scheduler *sch, int id, PCBQ *queue)
+block (int id, PCBQ *queue)
 {
     PCB *pcb = take (queue, id);
     pcb->state = BLOCKED;
@@ -287,25 +292,23 @@ unblock (Scheduler *sch, int id, PCBQ *queue)
 void
 init_sem (Semaphore *sem, int initial_value)
 {
+    static int id = 0;
+    sem->id = id++;
     sem->state = 0;
     sem->value = initial_value;
     sem->queue.front = sem->queue.rear = NULL;
 }
-
+//TODO: it should deque from running queuuee
 void
 wait_sem (Semaphore *sem)
 {
     sem->value--;
     if (sem->value < 0)
         {
-            PCB current_pcb
-                = dequeue (sem->queue.front->pcb.type == RTP ? &scheduler.RTQ
-                                                             : &scheduler.TSQ);
+            PCB current_pcb = dequeue (&running_queue);
+            current_pcb.state = BLOCKED;
             enqueue (&sem->queue, current_pcb);
-
-            block (&scheduler, current_pcb.id,
-                   sem->queue.front->pcb.type == RTP ? &scheduler.RTQ
-                                                     : &scheduler.TSQ);
+            pthread_exit(NULL);
         }
 }
 
@@ -316,10 +319,28 @@ signal_sem (Semaphore *sem)
     if (sem->value <= 0)
         {
             PCB pcb = dequeue (&sem->queue);
-            enqueue (pcb.type == RTP ? &scheduler.RTQ : &scheduler.TSQ, pcb);
-            make_ready (&scheduler, pcb.id,
-                        pcb.type == RTP ? &scheduler.RTQ : &scheduler.TSQ);
+            pcb.state = READY;
+
+            if (pcb.type == RTP)
+            {
+                enqueue(&scheduler.RTQ, pcb);
+            }
+            else if (pcb.type == TSP)
+            {
+                enqueue(&scheduler.TSQ, pcb);
+            }
         }
+    printf("Signal sem  %d\n", sem->id+1);
+}
+
+int
+nowait_sem (Semaphore *sem)
+{
+    if (sem->value <= 0)
+        return 0;
+    else
+        sem->value--;
+    return 1;
 }
 
 void *
@@ -334,13 +355,23 @@ producer (void *arg)
         }
     while (!feof (src))
         {
+            printf ("Producer waiting sem1\n");
             wait_sem (&s1);
-            if (shared == 0)
-                break;
+            printf ("producer critical section\n");
             shared = fgetc (src);
-            printf ("%c", shared);
+            if (shared == EOF)
+            {
+                shared = 0;  // Mark the end of the file
+                signal_sem(&s2);  // Ensure consumer can exit properly
+                break;
+            }
+            printf ("%c\n", shared);
             signal_sem (&s2);
         }
+    // wait_sem(&s1);
+    // printf("producer cleaned up\n");
+    // shared = 0;
+    // signal_sem (&s2);
     fclose (src);
     pthread_exit (NULL);
 }
@@ -357,10 +388,17 @@ consumer (void *arg)
         }
     while (1)
         {
+            printf ("Consumer waiting sem2\n");
             wait_sem (&s2);
+            printf ("consumer critical section\n");
+            printf ("%c\n", shared);
             if (shared == 0)
+            {
+                printf ("shared is 0\n");
                 break;
-            printf ("%c", shared);
+            }
+                
+            printf ("%c consumer shared \n", shared);
             fputc (shared, dst);
             signal_sem (&s1);
         }
@@ -375,31 +413,34 @@ init_scheduler (Scheduler *sch)
     sch->RTQ.front = sch->RTQ.rear = NULL;
     sch->TSQ.front = sch->TSQ.rear = NULL;
 }
-
+// TODO: sch->RTQ is empty fill it
 void
 schedule (Scheduler *sch)
 {
     PCB pcb;
+    while (task_queue.front != NULL) {
+        pcb = dequeue(&task_queue);
+        pcb.state = READY;
+        enqueue(pcb.type == RTP ? &sch->RTQ : &sch->TSQ, pcb);
+    }
+
     while (1)
         {
-            // switch (ready_queue.front->pcb.state)
-            //     {
-            //     case BLOCKED:
-            //     case DELAYED:
-            //
-            //     case READY:
-            //     }
+
             if (sch->RTQ.front != NULL)
                 {
                     pcb = dequeue (&sch->RTQ);
+                    enqueue(&running_queue, pcb);
                     pthread_create (&pcb.thread, NULL, pcb.function,
                                     NULL); // Use function pointer
-                    pcb = dequeue (&sch->TSQ);
-                    pthread_create (&pcb.thread, NULL, pcb.function,
-                                    NULL); // Use function pointer
+
                 }
             else if (sch->TSQ.front != NULL)
                 {
+                    pcb = dequeue (&sch->TSQ);
+                    enqueue(&user_queue, pcb);
+                    pthread_create (&pcb.thread, NULL, pcb.function,
+                                    NULL); // Use function pointer
                 }
         }
 }
@@ -408,16 +449,16 @@ int
 main ()
 {
     // Initialize semaphores
-    init_sem (&s1, 0); // Semaphore s1 initialized with value 1
-    init_sem (&s2, 1); // Semaphore s2 initialized with value 0
+    init_sem (&s1, 1);
+    init_sem (&s2, 0);
 
     // Initialize scheduler
     init_scheduler (&scheduler);
-    shared = 1;
+    shared = 0;
 
     // Create producer and consumer processes
-    make_proc (&scheduler, "Producer", RTP, READY, producer);
-    make_proc (&scheduler, "Consumer", RTP, READY, consumer);
+    make_proc ("Producer", RTP, READY, producer);
+    make_proc ("Consumer", RTP, READY, consumer);
 
     // Run scheduler
     schedule (&scheduler);
